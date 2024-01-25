@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use druid::{AppLauncher, WindowDesc, Widget, Color, Env, RenderContext, EventCtx, Event, LifeCycle, Selector, WidgetId, ExtEventSink};
+use druid::{AppLauncher, WindowDesc, Widget, Color, Env, RenderContext, EventCtx, Event, LifeCycle, Selector, WidgetId, ExtEventSink, Vec2, Point};
 use reqwest;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 use druid::piet::{Text, TextLayoutBuilder};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+
+
 
 
 
@@ -34,12 +35,13 @@ struct PageInfo {
 struct TransparentWindow {
     id: WidgetId,
     drag_state: DragState,
-    chat_items: Arc<Mutex<Vec<(String, String)>>>
+    mouse_down: bool,
+    chat_items: Arc<Mutex<Vec<(String, String)>>>,
+    mouse_position: Arc<Mutex<druid::Point>>,
 }
 struct DragState {
     dragging: bool,
 }
-
 
 
 fn start_fetch_loop(chat_items: Arc<Mutex<Vec<(String, String)>>>) {
@@ -69,17 +71,49 @@ fn start_fetch_loop(chat_items: Arc<Mutex<Vec<(String, String)>>>) {
         }
     });
 }
-
+impl TransparentWindow {
+    pub fn new() -> Self {
+        Self {
+            id: WidgetId::next(),
+            mouse_down: false,
+            drag_state: DragState { dragging: false },
+            chat_items: Arc::new(Mutex::new(vec![])),
+            mouse_position: Arc::new(Mutex:: new(druid::Point::new(0.0, 0.0)))
+        }
+    }
+}
 
 impl Widget<()> for TransparentWindow {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, _data: &mut (), _env: &Env) {
+        let mouse_position = Arc::clone(&self.mouse_position);
         match event {
             Event::WindowConnected => {
                 start_fetch_loop(Arc::clone(&self.chat_items));
                 ctx.request_timer(Duration::from_secs(1));
+
+
+                thread::spawn(move || {
+                    match rdev::listen(move|event: rdev::Event| {
+                        match event.event_type {
+                            rdev::EventType::MouseMove { x, y } => {
+                                let mut point = mouse_position.lock().unwrap();
+                                *point = druid::Point::new(x, y);
+
+
+                            }
+                            _ => {}
+                        }
+
+                    }) {
+                        Ok(_) => println!("Finished listening to global events."),
+                        Err(err) => eprintln!("Error: {:?}", err),
+                    }
+                });
+
             }
             Event::MouseDown(mouse_event) => {
                 if mouse_event.button.is_left() {
+                    self.mouse_down = true;
                     ctx.set_active(true);
                     self.drag_state.dragging = true;
                     ctx.request_update();
@@ -88,21 +122,24 @@ impl Widget<()> for TransparentWindow {
             }
             Event::MouseMove(mouse_event) => {
                 if self.drag_state.dragging {
-                    ctx.window().set_position(mouse_event.window_pos);
+                    let mut mouse_points = *mouse_position.lock().unwrap();
+                    ctx.window().set_position(mouse_points);
+                    ctx.request_layout();
+                    ctx.request_paint();
                     ctx.window().set_always_on_top(true);
-                    ctx.request_update();
                 }
             }
 
             Event::MouseUp(_) => {
-                ctx.window().set_always_on_top(true);
-                ctx.window().show_titlebar(false);
                 self.drag_state.dragging = false;
+                ctx.set_active(false);
                 ctx.window().set_always_on_top(true);
             }
 
             Event::Timer(_) => {
                 ctx.request_paint();
+
+
                 ctx.request_timer(Duration::from_secs(1));
             }
             _ => {}
@@ -132,10 +169,14 @@ impl Widget<()> for TransparentWindow {
     }
 
     fn layout(&mut self, _ctx: &mut druid::LayoutCtx, _bc: &druid::BoxConstraints, _data: &(), _env: &Env) -> druid::Size {
+        _bc.constrain((100.0, 100.0));
         druid::Size::new(300.0, 500.0) // Set your window size here
+
     }
     fn paint(&mut self, ctx: &mut druid::PaintCtx, _data: &(), _env: &Env) {
         let size = ctx.size();
+
+
         let mut y_position = druid::Point::new(30f64, 20f64);
 
         if let Ok(textlayout) = ctx
@@ -198,7 +239,14 @@ impl Widget<()> for TransparentWindow {
         let chat_items = Arc::new(Mutex::new(vec![]));
 
         let window_id = WidgetId::next(); // new code
-        let transparent_window = TransparentWindow { id: window_id, drag_state, chat_items: Arc::clone(&chat_items) };
+        let transparent_window = TransparentWindow {
+            id: window_id,
+            drag_state,
+            mouse_down: false,
+            chat_items: Arc::clone(&chat_items),
+            mouse_position: Default::default(),
+
+        };
         print!("window created {:?}", window_id);
         let main_window = WindowDesc::new(transparent_window)
             .title("Transparent Window Example")
@@ -213,6 +261,8 @@ impl Widget<()> for TransparentWindow {
 
         let app = AppLauncher::with_window(main_window)
             .log_to_console();
+
+        println!("app created");
 
         app.launch(())
             .expect("Failed to launch application");
